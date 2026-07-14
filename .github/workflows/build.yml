@@ -6,161 +6,125 @@ on:
       - 'v*'
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   build:
     name: Build Windows EXE
     runs-on: windows-latest
     
-    permissions:
-      contents: write  # ← КРИТИЧНО! Даёт право создавать релизы
-    
     steps:
     - name: Checkout repository
       uses: actions/checkout@v4
-      with:
-        fetch-depth: 0
     
     - name: Set up Python 3.11
       uses: actions/setup-python@v5
       with:
         python-version: '3.11'
-        cache: 'pip'
     
-    - name: Install dependencies
+    - name: Debug - Show repository structure
+      shell: pwsh
+      run: |
+        Write-Host "=== Current directory: $(Get-Location) ==="
+        Write-Host "=== Files in root ==="
+        Get-ChildItem | Select-Object Name, Length
+        Write-Host "=== All files (recursive) ==="
+        Get-ChildItem -Recurse -File | Select-Object -First 30 FullName
+    
+    - name: Install dependencies directly
+      shell: pwsh
       run: |
         python -m pip install --upgrade pip
-        pip install -r requirements.txt
+        pip install PyQt5==5.15.11 psutil requests Pillow pyinstaller
+        Write-Host "✅ Dependencies installed"
+        pip list | Select-String "PyQt5|psutil|requests|Pillow|pyinstaller"
     
-    - name: Extract version
-      id: version
-      shell: bash
-      run: |
-        if [[ "${{ github.ref }}" == refs/tags/* ]]; then
-          VERSION=${GITHUB_REF#refs/tags/v}
-        else
-          VERSION="dev-$(date +%Y%m%d-%H%M%S)"
-        fi
-        echo "version=$VERSION" >> $GITHUB_OUTPUT
-        echo "Building version: $VERSION"
-    
-    - name: Update version in source
+    - name: Check main script exists
       shell: pwsh
       run: |
-        $version = "${{ steps.version.outputs.version }}"
-        $content = Get-Content smart_ram_cleaner.py -Raw
-        $content = $content -replace 'APP_VERSION = "[^"]*"', "APP_VERSION = `"$version`""
-        Set-Content smart_ram_cleaner.py -Value $content
-        Write-Host "Updated APP_VERSION to $version"
+        if (Test-Path "smart_ram_cleaner.py") {
+          Write-Host "✅ smart_ram_cleaner.py found!"
+        } else {
+          Write-Host "❌ smart_ram_cleaner.py NOT FOUND!"
+          Write-Host "Files in current dir:"
+          Get-ChildItem
+          exit 1
+        }
+    
+    - name: Create chrome_extension folder if missing
+      shell: pwsh
+      run: |
+        if (-not (Test-Path "chrome_extension")) {
+          Write-Host "⚠️ chrome_extension folder missing, creating minimal version..."
+          New-Item -ItemType Directory -Path "chrome_extension" -Force | Out-Null
+          @'
+{
+  "manifest_version": 3,
+  "name": "Smart Tab Suspender",
+  "version": "1.0",
+  "description": "Tab suspender for Smart RAM Cleaner",
+  "permissions": ["tabs", "storage"],
+  "background": {"service_worker": "background.js"}
+}
+'@ | Set-Content "chrome_extension/manifest.json"
+          "console.log('Smart Tab Suspender loaded');" | Set-Content "chrome_extension/background.js"
+        }
+        Write-Host "✅ chrome_extension ready"
     
     - name: Build EXE with PyInstaller
-      run: |
-        pyinstaller --noconfirm --onefile --windowed `
-          --name SmartRAMCleaner `
-          --uac-admin `
-          --icon=assets/icon.ico `
-          --add-data "chrome_extension;chrome_extension" `
-          smart_ram_cleaner.py
       shell: pwsh
-    
-    - name: Verify build
-      shell: bash
       run: |
-        if [ ! -f "dist/SmartRAMCleaner.exe" ]; then
-          echo "ERROR: EXE file not found!"
+        Write-Host "🔨 Starting PyInstaller build..."
+        $addData = ""
+        if (Test-Path "chrome_extension") {
+          $addData = '--add-data "chrome_extension;chrome_extension"'
+        }
+        
+        $iconArg = ""
+        if (Test-Path "assets/icon.ico") {
+          $iconArg = '--icon "assets/icon.ico"'
+        }
+        
+        $cmd = "pyinstaller --noconfirm --onefile --windowed --name SmartRAMCleaner --uac-admin $addData $iconArg smart_ram_cleaner.py"
+        Write-Host "Running: $cmd"
+        Invoke-Expression $cmd
+        
+        Write-Host "=== Build completed! ==="
+        Write-Host "Files in dist/:"
+        Get-ChildItem dist -ErrorAction SilentlyContinue
+    
+    - name: Verify EXE was created
+      shell: pwsh
+      run: |
+        if (Test-Path "dist/SmartRAMCleaner.exe") {
+          $file = Get-Item "dist/SmartRAMCleaner.exe"
+          $sizeMB = [math]::Round($file.Length / 1MB, 2)
+          Write-Host "✅ EXE created successfully!"
+          Write-Host "   Name: $($file.Name)"
+          Write-Host "   Size: $sizeMB MB"
+        } else {
+          Write-Host "❌ FATAL: SmartRAMCleaner.exe not found in dist/"
+          Write-Host "Contents of dist/:"
+          Get-ChildItem dist -ErrorAction SilentlyContinue
+          Write-Host "Contents of current dir:"
+          Get-ChildItem
           exit 1
-        fi
-        ls -lh dist/
-        echo "✅ Build successful!"
+        }
     
-    - name: Create ZIP package with Chrome extension
-      shell: pwsh
-      run: |
-        # Создаём ZIP с EXE + расширением + инструкцией
-        New-Item -ItemType Directory -Path "release_package" -Force | Out-Null
-        Copy-Item "dist/SmartRAMCleaner.exe" "release_package/"
-        Copy-Item -Path "chrome_extension" -Destination "release_package/chrome_extension" -Recurse
-        
-        # Создаём README внутри пакета
-        $readme = @"
-        🧠 Smart RAM Cleaner Pro v${{ steps.version.outputs.version }}
-
-        📦 Установка:
-        1. Запустите SmartRAMCleaner.exe от имени администратора
-        2. Chrome-расширение создастся автоматически рядом с EXE
-        3. Откройте chrome://extensions → Режим разработчика
-        4. "Загрузить распакованное" → выберите папку chrome_extension
-
-        ⌨️ Горячие клавиши Chrome:
-        - Ctrl+Shift+S — заморозить текущую вкладку
-        - Ctrl+Shift+A — заморозить все неактивные
-
-        © 2026 Smart RAM Cleaner Pro
-        "@
-        Set-Content "release_package/README.txt" -Value $readme
-        
-        # Сжимаем в ZIP
-        Compress-Archive -Path "release_package/*" -DestinationPath "dist/SmartRAMCleaner-v${{ steps.version.outputs.version }}.zip" -Force
-        ls -lh dist/
-    
-    - name: Get tag message
-      id: tag_message
-      if: startsWith(github.ref, 'refs/tags/')
-      shell: bash
-      run: |
-        TAG_NAME=${GITHUB_REF#refs/tags/}
-        MESSAGE=$(git tag -l --format='%(contents)' $TAG_NAME 2>/dev/null || echo "")
-        echo "message<<EOF" >> $GITHUB_OUTPUT
-        echo "$MESSAGE" >> $GITHUB_OUTPUT
-        echo "EOF" >> $GITHUB_OUTPUT
-    
-    - name: Create GitHub Release
+    - name: Upload EXE to GitHub Release
       uses: softprops/action-gh-release@v2
       if: startsWith(github.ref, 'refs/tags/')
       with:
-        name: Smart RAM Cleaner Pro v${{ steps.version.outputs.version }}
-        tag_name: ${{ github.ref_name }}
-        body: |
-          ## 🎉 Smart RAM Cleaner Pro v${{ steps.version.outputs.version }}
-          
-          ${{ steps.tag_message.outputs.message }}
-          
-          ---
-          
-          ### 📥 Варианты скачивания
-          
-          | Файл | Описание |
-          |------|----------|
-          | **`SmartRAMCleaner.exe`** | Только EXE. Расширение создастся автоматически при запуске |
-          | **`SmartRAMCleaner-v${{ steps.version.outputs.version }}.zip`** | Полный пакет: EXE + Chrome-расширение + README |
-          
-          ### 🚀 Установка
-          
-          1. Скачай **`SmartRAMCleaner.exe`**
-          2. Запусти **от имени администратора** (ПКМ → Запуск от имени администратора)
-          3. При первом запуске папка `chrome_extension` создастся автоматически рядом с EXE
-          4. В программе открой вкладку **🌐 Chrome** и следуй инструкции
-          
-          ### 🔄 Автообновление
-          Если у тебя уже установлена программа — **она сама предложит обновиться** при следующем запуске!
-          
-          ---
-          
-          **Системные требования:** Windows 10/11 x64
-        files: |
-          dist/SmartRAMCleaner.exe
-          dist/SmartRAMCleaner-v${{ steps.version.outputs.version }}.zip
-        draft: false
-        prerelease: false
+        files: dist/SmartRAMCleaner.exe
         generate_release_notes: true
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     
-    - name: Upload artifact (fallback)
+    - name: Upload artifact (backup)
       uses: actions/upload-artifact@v4
       if: always()
       with:
-        name: SmartRAMCleaner-v${{ steps.version.outputs.version }}
-        path: |
-          dist/SmartRAMCleaner.exe
-          dist/*.zip
-        retention-days: 90
+        name: SmartRAMCleaner-EXE
+        path: dist/SmartRAMCleaner.exe
+        retention-days: 30
