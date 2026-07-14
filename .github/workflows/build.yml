@@ -3,17 +3,22 @@ name: Build and Release
 on:
   push:
     tags:
-      - 'v*'  # Запуск при создании тега v1.0.0, v1.1.0 и т.д.
-  workflow_dispatch:  # Возможность ручного запуска из GitHub UI
+      - 'v*'
+  workflow_dispatch:
 
 jobs:
   build:
     name: Build Windows EXE
     runs-on: windows-latest
     
+    permissions:
+      contents: write  # ← КРИТИЧНО! Даёт право создавать релизы
+    
     steps:
     - name: Checkout repository
       uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
     
     - name: Set up Python 3.11
       uses: actions/setup-python@v5
@@ -26,14 +31,14 @@ jobs:
         python -m pip install --upgrade pip
         pip install -r requirements.txt
     
-    - name: Extract version from tag
+    - name: Extract version
       id: version
       shell: bash
       run: |
         if [[ "${{ github.ref }}" == refs/tags/* ]]; then
           VERSION=${GITHUB_REF#refs/tags/v}
         else
-          VERSION="dev-$(date +%Y%m%d)"
+          VERSION="dev-$(date +%Y%m%d-%H%M%S)"
         fi
         echo "version=$VERSION" >> $GITHUB_OUTPUT
         echo "Building version: $VERSION"
@@ -42,7 +47,9 @@ jobs:
       shell: pwsh
       run: |
         $version = "${{ steps.version.outputs.version }}"
-        (Get-Content smart_ram_cleaner.py) -replace 'APP_VERSION = ".*"', "APP_VERSION = `"$version`"" | Set-Content smart_ram_cleaner.py
+        $content = Get-Content smart_ram_cleaner.py -Raw
+        $content = $content -replace 'APP_VERSION = "[^"]*"', "APP_VERSION = `"$version`""
+        Set-Content smart_ram_cleaner.py -Value $content
         Write-Host "Updated APP_VERSION to $version"
     
     - name: Build EXE with PyInstaller
@@ -53,6 +60,7 @@ jobs:
           --icon=assets/icon.ico `
           --add-data "chrome_extension;chrome_extension" `
           smart_ram_cleaner.py
+      shell: pwsh
     
     - name: Verify build
       shell: bash
@@ -64,22 +72,53 @@ jobs:
         ls -lh dist/
         echo "✅ Build successful!"
     
+    - name: Create ZIP package with Chrome extension
+      shell: pwsh
+      run: |
+        # Создаём ZIP с EXE + расширением + инструкцией
+        New-Item -ItemType Directory -Path "release_package" -Force | Out-Null
+        Copy-Item "dist/SmartRAMCleaner.exe" "release_package/"
+        Copy-Item -Path "chrome_extension" -Destination "release_package/chrome_extension" -Recurse
+        
+        # Создаём README внутри пакета
+        $readme = @"
+        🧠 Smart RAM Cleaner Pro v${{ steps.version.outputs.version }}
+
+        📦 Установка:
+        1. Запустите SmartRAMCleaner.exe от имени администратора
+        2. Chrome-расширение создастся автоматически рядом с EXE
+        3. Откройте chrome://extensions → Режим разработчика
+        4. "Загрузить распакованное" → выберите папку chrome_extension
+
+        ⌨️ Горячие клавиши Chrome:
+        - Ctrl+Shift+S — заморозить текущую вкладку
+        - Ctrl+Shift+A — заморозить все неактивные
+
+        © 2026 Smart RAM Cleaner Pro
+        "@
+        Set-Content "release_package/README.txt" -Value $readme
+        
+        # Сжимаем в ZIP
+        Compress-Archive -Path "release_package/*" -DestinationPath "dist/SmartRAMCleaner-v${{ steps.version.outputs.version }}.zip" -Force
+        ls -lh dist/
+    
     - name: Get tag message
       id: tag_message
       if: startsWith(github.ref, 'refs/tags/')
       shell: bash
       run: |
         TAG_NAME=${GITHUB_REF#refs/tags/}
-        MESSAGE=$(git tag -l --format='%(contents)' $TAG_NAME)
+        MESSAGE=$(git tag -l --format='%(contents)' $TAG_NAME 2>/dev/null || echo "")
         echo "message<<EOF" >> $GITHUB_OUTPUT
         echo "$MESSAGE" >> $GITHUB_OUTPUT
         echo "EOF" >> $GITHUB_OUTPUT
     
     - name: Create GitHub Release
-      uses: softprops/action-gh-release@v1
+      uses: softprops/action-gh-release@v2
       if: startsWith(github.ref, 'refs/tags/')
       with:
         name: Smart RAM Cleaner Pro v${{ steps.version.outputs.version }}
+        tag_name: ${{ github.ref_name }}
         body: |
           ## 🎉 Smart RAM Cleaner Pro v${{ steps.version.outputs.version }}
           
@@ -87,29 +126,41 @@ jobs:
           
           ---
           
-          ### 📥 Установка
-          1. Скачай `SmartRAMCleaner.exe` ниже
-          2. Запусти от имени администратора
-          3. Готово!
+          ### 📥 Варианты скачивания
+          
+          | Файл | Описание |
+          |------|----------|
+          | **`SmartRAMCleaner.exe`** | Только EXE. Расширение создастся автоматически при запуске |
+          | **`SmartRAMCleaner-v${{ steps.version.outputs.version }}.zip`** | Полный пакет: EXE + Chrome-расширение + README |
+          
+          ### 🚀 Установка
+          
+          1. Скачай **`SmartRAMCleaner.exe`**
+          2. Запусти **от имени администратора** (ПКМ → Запуск от имени администратора)
+          3. При первом запуске папка `chrome_extension` создастся автоматически рядом с EXE
+          4. В программе открой вкладку **🌐 Chrome** и следуй инструкции
           
           ### 🔄 Автообновление
-          Если у тебя уже установлена программа — она сама предложит обновиться при следующем запуске.
+          Если у тебя уже установлена программа — **она сама предложит обновиться** при следующем запуске!
           
           ---
           
-          **Полный список изменений:** [CHANGELOG](https://github.com/${{ github.repository }}/commits/${{ github.ref_name }})
+          **Системные требования:** Windows 10/11 x64
         files: |
           dist/SmartRAMCleaner.exe
+          dist/SmartRAMCleaner-v${{ steps.version.outputs.version }}.zip
         draft: false
         prerelease: false
         generate_release_notes: true
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     
-    - name: Upload artifact (для отладки)
+    - name: Upload artifact (fallback)
       uses: actions/upload-artifact@v4
       if: always()
       with:
         name: SmartRAMCleaner-v${{ steps.version.outputs.version }}
-        path: dist/SmartRAMCleaner.exe
-        retention-days: 30
+        path: |
+          dist/SmartRAMCleaner.exe
+          dist/*.zip
+        retention-days: 90

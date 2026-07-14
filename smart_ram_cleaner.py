@@ -6,7 +6,7 @@ import ctypes
 import psutil
 import webbrowser
 import subprocess
-import updater  
+import shutil
 from datetime import datetime
 
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
@@ -17,10 +17,45 @@ from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
 from PyQt5.QtCore import Qt, QTimer, QThread, pyqtSignal, QObject
 from PyQt5.QtGui import QFont, QIcon, QColor, QPixmap, QPainter, QPen, QFontMetrics
 
+# Импортируем updater (может отсутствовать при первой сборке)
+try:
+    import updater
+    UPDATER_AVAILABLE = True
+except ImportError:
+    UPDATER_AVAILABLE = False
+
 # ==================== ВЕРСИЯ ПРИЛОЖЕНИЯ ====================
 APP_VERSION = "1.0.0"
 APP_NAME = "Smart RAM Cleaner Pro"
-GITHUB_REPO = "DENLOPER/SmartRAMCleaner"  # ← Замени на свой ник!
+GITHUB_REPO = "YOUR_USERNAME/SmartRAMCleaner"  # ← Замени на свой ник!
+
+# ==================== УТИЛИТЫ ПУТЕЙ ====================
+def is_frozen():
+    """Проверяет, запущено ли приложение как .exe (PyInstaller)"""
+    return getattr(sys, 'frozen', False) and hasattr(sys, '_MEIPASS')
+
+def get_application_path():
+    """Возвращает путь к папке с ресурсами (внутри _MEIPASS для EXE)"""
+    if is_frozen():
+        return sys._MEIPASS
+    return os.path.dirname(os.path.abspath(__file__))
+
+def get_user_data_path():
+    """
+    Возвращает путь для пользовательских данных (settings, chrome_extension, logs).
+    Для EXE — рядом с .exe файлом. Для .py — рядом со скриптом.
+    """
+    if is_frozen():
+        return os.path.dirname(os.path.abspath(sys.executable))
+    return os.path.dirname(os.path.abspath(__file__))
+
+def get_settings_path():
+    """Путь к файлу настроек"""
+    return os.path.join(get_user_data_path(), 'settings.json')
+
+def get_chrome_extension_path():
+    """Путь к папке Chrome-расширения"""
+    return os.path.join(get_user_data_path(), 'chrome_extension')
 
 # ==================== КОНСТАНТЫ WINDOWS API ====================
 PROCESS_SET_QUOTA = 0x0100
@@ -49,14 +84,10 @@ def is_admin():
 
 def run_as_admin():
     try:
-        exe_path = os.path.abspath(sys.argv[0])
+        exe_path = os.path.abspath(sys.executable if is_frozen() else sys.argv[0])
         params = ' '.join(sys.argv[1:])
-        if exe_path.endswith('.py'):
-            ret = ctypes.windll.shell32.ShellExecuteW(
-                None, "runas", sys.executable, f'"{exe_path}" {params}', None, 1)
-        else:
-            ret = ctypes.windll.shell32.ShellExecuteW(
-                None, "runas", exe_path, params, None, 1)
+        ret = ctypes.windll.shell32.ShellExecuteW(
+            None, "runas", exe_path, params, None, 1)
         if ret > 32:
             sys.exit(0)
     except Exception as e:
@@ -332,7 +363,6 @@ class CleanerThread(QThread):
             return 0.0
     
     def _get_process_memory(self, pid):
-        """Надёжное получение памяти процесса"""
         try:
             proc = psutil.Process(pid)
             return proc.memory_info().rss
@@ -342,7 +372,6 @@ class CleanerThread(QThread):
             return 0
     
     def do_clean(self, aggressive=False):
-        """Надёжная очистка с детальным логированием"""
         active_pids = self.get_active_pids()
         whitelist = set([p.lower() for p in self.config['whitelist'] + self.config['user_whitelist']])
         min_mem_mb = 50 if aggressive else self.config['min_process_memory_mb']
@@ -356,7 +385,6 @@ class CleanerThread(QThread):
         }
         details = []
         
-        # ДИАГНОСТИКА
         self.log_signal.emit(f"🔍 Поиск процессов для очистки (min={min_mem_mb}МБ)...")
         
         if self.config.get('clean_working_set', True) or aggressive:
@@ -367,7 +395,6 @@ class CleanerThread(QThread):
                 self.log_signal.emit(f"❌ Ошибка получения списка: {e}")
                 all_procs = []
             
-            # Получаем память через отдельные вызовы
             procs_with_mem = []
             for p in all_procs:
                 try:
@@ -385,17 +412,14 @@ class CleanerThread(QThread):
             mem_ok_count = sum(1 for p in procs_with_mem if p['rss_bytes'] > 0)
             self.log_signal.emit(f"✅ Память получена у: {mem_ok_count} из {len(procs_with_mem)} процессов")
             
-            # Сортируем по памяти
             procs_with_mem.sort(key=lambda x: x['rss_bytes'], reverse=True)
             
-            # ТОП-5 для диагностики
             if aggressive and procs_with_mem:
                 self.log_signal.emit("🏆 ТОП-5 процессов по памяти:")
                 for i, p in enumerate(procs_with_mem[:5]):
                     mb = p['rss_bytes'] / (1024**2)
                     self.log_signal.emit(f"   {i+1}. {p['name']} ({mb:.1f} МБ)")
             
-            # Основной цикл очистки
             for proc_data in procs_with_mem:
                 if not self.running:
                     break
@@ -432,7 +456,6 @@ class CleanerThread(QThread):
                 if stats['working_set_cleaned'] >= (20 if aggressive else 10):
                     break
         
-        # Системные методы очистки
         if self.config.get('clean_standby_low', False):
             stats['standby_low'] = self.clean_memory_list(MemoryPurgeLowPriorityStandbyList)
         if self.config.get('clean_standby_normal', False):
@@ -461,7 +484,6 @@ class CleanerThread(QThread):
         if self.config.get('clean_modified_list', False) and aggressive:
             stats['modified'] = self.clean_memory_list(MemoryPurgeModifiedList)
         
-        # Финальная статистика
         self.log_signal.emit(
             f"📈 Итог: найдено {stats['total']} | "
             f"нет памяти {stats['no_memory_info']} | "
@@ -555,7 +577,6 @@ class CleanerThread(QThread):
 
 # ==================== WORKER ДЛЯ ФОНОВОЙ ОЧИСТКИ ====================
 class CleanWorker(QObject):
-    """Worker для выполнения очистки в отдельном потоке"""
     finished = pyqtSignal(dict, list)
     log_signal = pyqtSignal(str)
     
@@ -564,7 +585,6 @@ class CleanWorker(QObject):
         self.config = config
     
     def do_work(self):
-        """Выполняет очистку и возвращает результаты"""
         try:
             self.log_signal.emit("🔍 Анализ процессов...")
             temp_thread = CleanerThread(self.config)
@@ -592,7 +612,8 @@ class MainWindow(QMainWindow):
         self.clean_worker_thread = None
         self.clean_worker = None
         
-        self.ext_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'chrome_extension')
+        # ВАЖНО: расширение создаём РЯДОМ С EXE (не во временной папке _MEIPASS)
+        self.ext_dir = get_chrome_extension_path()
         self.setup_chrome_extension()
         self.init_ui()
         self.setup_tray()
@@ -605,8 +626,39 @@ class MainWindow(QMainWindow):
         self.ui_update_timer.start()
     
     def setup_chrome_extension(self):
-        """Автоматически создаёт файлы расширения Chrome"""
+        """Создаёт файлы расширения Chrome рядом с EXE/скриптом"""
         os.makedirs(self.ext_dir, exist_ok=True)
+        
+        # Определяем источник файлов
+        if is_frozen():
+            source_dir = os.path.join(sys._MEIPASS, 'chrome_extension')
+        else:
+            source_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'chrome_extension')
+        
+        # Список файлов расширения
+        ext_files = ['manifest.json', 'background.js', 'popup.html', 
+                     'popup.js', 'options.html', 'options.js']
+        
+        # Копируем файлы из источника, если их нет в целевой папке
+        if os.path.exists(source_dir):
+            for filename in ext_files:
+                target_path = os.path.join(self.ext_dir, filename)
+                source_path = os.path.join(source_dir, filename)
+                
+                if not os.path.exists(target_path) and os.path.exists(source_path):
+                    try:
+                        shutil.copy2(source_path, target_path)
+                    except Exception as e:
+                        print(f"Не удалось скопировать {filename}: {e}")
+        
+        # Если файлов всё ещё нет — создаём их заново (fallback)
+        self._ensure_extension_files()
+    
+    def _ensure_extension_files(self):
+        """Создаёт файлы расширения если их нет"""
+        manifest_path = os.path.join(self.ext_dir, 'manifest.json')
+        if os.path.exists(manifest_path):
+            return  # Файлы уже есть
         
         manifest = {
             "manifest_version": 3,
@@ -630,11 +682,10 @@ class MainWindow(QMainWindow):
             }
         }
         
-        manifest_path = os.path.join(self.ext_dir, 'manifest.json')
-        if not os.path.exists(manifest_path):
-            with open(manifest_path, 'w', encoding='utf-8') as f:
-                json.dump(manifest, f, indent=2, ensure_ascii=False)
+        with open(manifest_path, 'w', encoding='utf-8') as f:
+            json.dump(manifest, f, indent=2, ensure_ascii=False)
         
+        # background.js
         background_js = """const DEFAULT_SETTINGS = {
   enabled: true, suspendTime: 10,
   whitelist: ['youtube.com', 'music.youtube.com', 'spotify.com', 'twitch.tv', 'discord.com'],
@@ -733,11 +784,10 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   return true;
 });"""
         
-        bg_path = os.path.join(self.ext_dir, 'background.js')
-        if not os.path.exists(bg_path):
-            with open(bg_path, 'w', encoding='utf-8') as f:
-                f.write(background_js)
+        with open(os.path.join(self.ext_dir, 'background.js'), 'w', encoding='utf-8') as f:
+            f.write(background_js)
         
+        # popup.html
         popup_html = """<!DOCTYPE html>
 <html><head><meta charset="utf-8">
 <style>
@@ -781,11 +831,10 @@ input:checked + .slider:before { transform: translateX(20px); }
 <script src="popup.js"></script>
 </body></html>"""
         
-        popup_path = os.path.join(self.ext_dir, 'popup.html')
-        if not os.path.exists(popup_path):
-            with open(popup_path, 'w', encoding='utf-8') as f:
-                f.write(popup_html)
+        with open(os.path.join(self.ext_dir, 'popup.html'), 'w', encoding='utf-8') as f:
+            f.write(popup_html)
         
+        # popup.js
         popup_js = """document.addEventListener('DOMContentLoaded', async () => {
   const data = await chrome.storage.local.get(['enabled']);
   document.getElementById('enabledToggle').checked = data.enabled !== false;
@@ -825,11 +874,10 @@ input:checked + .slider:before { transform: translateX(20px); }
   });
 });"""
         
-        popup_js_path = os.path.join(self.ext_dir, 'popup.js')
-        if not os.path.exists(popup_js_path):
-            with open(popup_js_path, 'w', encoding='utf-8') as f:
-                f.write(popup_js)
+        with open(os.path.join(self.ext_dir, 'popup.js'), 'w', encoding='utf-8') as f:
+            f.write(popup_js)
         
+        # options.html
         options_html = """<!DOCTYPE html>
 <html><head><meta charset="utf-8"><title>Настройки</title>
 <style>
@@ -858,11 +906,10 @@ button { background: #007acc; color: white; border: none; padding: 10px 20px; bo
 <script src="options.js"></script>
 </body></html>"""
         
-        options_path = os.path.join(self.ext_dir, 'options.html')
-        if not os.path.exists(options_path):
-            with open(options_path, 'w', encoding='utf-8') as f:
-                f.write(options_html)
+        with open(os.path.join(self.ext_dir, 'options.html'), 'w', encoding='utf-8') as f:
+            f.write(options_html)
         
+        # options.js
         options_js = """document.addEventListener('DOMContentLoaded', async () => {
   const data = await chrome.storage.local.get({
     suspendTime: 10,
@@ -887,10 +934,8 @@ button { background: #007acc; color: white; border: none; padding: 10px 20px; bo
   });
 });"""
         
-        options_js_path = os.path.join(self.ext_dir, 'options.js')
-        if not os.path.exists(options_js_path):
-            with open(options_js_path, 'w', encoding='utf-8') as f:
-                f.write(options_js)
+        with open(os.path.join(self.ext_dir, 'options.js'), 'w', encoding='utf-8') as f:
+            f.write(options_js)
     
     def init_ui(self):
         self.setWindowTitle(f"{APP_NAME} v{APP_VERSION}")
@@ -1139,10 +1184,11 @@ button { background: #007acc; color: white; border: none; padding: 10px 20px; bo
         layout.addWidget(restart_admin_btn)
         
         # Кнопка проверки обновлений
-        update_btn = QPushButton("🔄 Проверить обновления")
-        update_btn.setStyleSheet("background-color: #27ae60; color: white; font-weight: bold;")
-        update_btn.clicked.connect(self.manual_check_updates)
-        layout.addWidget(update_btn)
+        if UPDATER_AVAILABLE:
+            update_btn = QPushButton("🔄 Проверить обновления")
+            update_btn.setStyleSheet("background-color: #27ae60; color: white; font-weight: bold;")
+            update_btn.clicked.connect(self.manual_check_updates)
+            layout.addWidget(update_btn)
         
         # Показывает текущую версию
         version_label = QLabel(f"Версия: v{APP_VERSION}")
@@ -1216,7 +1262,7 @@ button { background: #007acc; color: white; border: none; padding: 10px 20px; bo
         btn_group = QGroupBox("🔧 Управление")
         btn_layout = QVBoxLayout()
         open_folder_btn = QPushButton("📂 Открыть папку")
-        open_folder_btn.clicked.connect(lambda: os.startfile(self.ext_dir))
+        open_folder_btn.clicked.connect(self._open_ext_folder)
         btn_layout.addWidget(open_folder_btn)
         open_chrome_btn = QPushButton("🌍 Открыть chrome://extensions")
         open_chrome_btn.clicked.connect(lambda: webbrowser.open("chrome://extensions"))
@@ -1227,6 +1273,13 @@ button { background: #007acc; color: white; border: none; padding: 10px 20px; bo
         layout.addStretch()
         self.tabs.addTab(tab, "🌐 Chrome")
     
+    def _open_ext_folder(self):
+        """Открывает папку расширения в проводнике"""
+        if os.path.exists(self.ext_dir):
+            os.startfile(self.ext_dir)
+        else:
+            QMessageBox.warning(self, "Ошибка", f"Папка не найдена:\n{self.ext_dir}")
+    
     def create_build_tab(self):
         tab = QWidget()
         layout = QVBoxLayout(tab)
@@ -1235,6 +1288,15 @@ button { background: #007acc; color: white; border: none; padding: 10px 20px; bo
         title.setFont(QFont("Segoe UI", 14, QFont.Bold))
         title.setStyleSheet("color: #007acc;")
         layout.addWidget(title)
+        
+        if is_frozen():
+            desc = QLabel("⚠️ Запущено из EXE. Для сборки нужен .py файл.")
+            desc.setWordWrap(True)
+            desc.setStyleSheet("color: #f39c12; padding: 10px; background-color: #3a2a1a; border-radius: 5px;")
+            layout.addWidget(desc)
+            layout.addStretch()
+            self.tabs.addTab(tab, "📦 Сборка")
+            return
         
         desc = QLabel("Создаёт standalone .exe файл.")
         desc.setWordWrap(True)
@@ -1311,13 +1373,27 @@ button { background: #007acc; color: white; border: none; padding: 10px 20px; bo
         self.tabs.setCurrentIndex(6)
         QApplication.processEvents()
         
+        # Путь к папке chrome_extension для включения в EXE
+        ext_dir_for_build = os.path.join(os.path.dirname(script_path), 'chrome_extension')
+        
         cmd = [
             sys.executable, "-m", "PyInstaller",
             "--noconfirm", "--onefile", "--windowed",
             "--name", "SmartRAMCleaner",
             "--uac-admin",
-            script_path
         ]
+        
+        # Добавляем chrome_extension если папка существует
+        if os.path.exists(ext_dir_for_build):
+            cmd.extend(["--add-data", f"{ext_dir_for_build};chrome_extension"])
+            self.add_log(f"📦 Включаю chrome_extension в EXE")
+        
+        # Иконка если есть
+        icon_path = os.path.join(os.path.dirname(script_path), 'assets', 'icon.ico')
+        if os.path.exists(icon_path):
+            cmd.extend(["--icon", icon_path])
+        
+        cmd.append(script_path)
         
         try:
             process = subprocess.Popen(
@@ -1343,11 +1419,20 @@ button { background: #007acc; color: white; border: none; padding: 10px 20px; bo
     def create_bat_file(self):
         script_path = os.path.abspath(sys.argv[0])
         bat_path = os.path.join(os.path.dirname(script_path), 'build.bat')
+        
+        # Путь к chrome_extension
+        ext_dir = os.path.join(os.path.dirname(script_path), 'chrome_extension')
+        add_data = f'--add-data "{ext_dir};chrome_extension"' if os.path.exists(ext_dir) else ''
+        
+        # Путь к иконке
+        icon_path = os.path.join(os.path.dirname(script_path), 'assets', 'icon.ico')
+        icon_arg = f'--icon="{icon_path}"' if os.path.exists(icon_path) else ''
+        
         bat_content = f"""@echo off
 chcp 65001 >nul
 echo Сборка Smart RAM Cleaner Pro...
 python -m pip install pyinstaller >nul 2>&1
-python -m PyInstaller --noconfirm --onefile --windowed --name SmartRAMCleaner --uac-admin "{script_path}"
+python -m PyInstaller --noconfirm --onefile --windowed --name SmartRAMCleaner --uac-admin {add_data} {icon_arg} "{script_path}"
 echo Готово! Файл в папке dist\\
 pause
 """
@@ -1395,7 +1480,6 @@ pause
         self.tray.show()
     
     def _create_tray_icon(self, ram_percent):
-        """Оптимизированный рендер иконки БЕЗ QPainterPath"""
         percent_int = int(ram_percent)
         
         if percent_int in self._tray_icon_cache:
@@ -1434,12 +1518,10 @@ pause
         x = (64 - text_width) / 2
         y = (64 + text_height) / 2 - fm.descent() / 2
         
-        # Чёрная тень для обводки
         painter.setPen(QColor(0, 0, 0, 220))
         for dx, dy in [(-1,-1), (-1,1), (1,-1), (1,1), (0,-1), (0,1), (-1,0), (1,0)]:
             painter.drawText(int(x + dx), int(y + dy), text)
         
-        # Белый текст
         painter.setPen(QColor(255, 255, 255))
         painter.drawText(int(x), int(y), text)
         
@@ -1454,7 +1536,6 @@ pause
         return icon
     
     def update_tray_icon(self, ram_percent):
-        """Обновляет иконку только если значение изменилось"""
         percent_int = int(ram_percent)
         
         if percent_int == self._last_tray_percent:
@@ -1508,9 +1589,10 @@ pause
         QApplication.quit()
     
     def load_config(self):
-        if os.path.exists('settings.json'):
+        settings_path = get_settings_path()
+        if os.path.exists(settings_path):
             try:
-                with open('settings.json', 'r', encoding='utf-8') as f:
+                with open(settings_path, 'r', encoding='utf-8') as f:
                     cfg = json.load(f)
                     for k, v in DEFAULT_CONFIG.items():
                         if k not in cfg:
@@ -1521,8 +1603,12 @@ pause
         return DEFAULT_CONFIG.copy()
     
     def save_config(self):
-        with open('settings.json', 'w', encoding='utf-8') as f:
-            json.dump(self.config, f, indent=4, ensure_ascii=False)
+        settings_path = get_settings_path()
+        try:
+            with open(settings_path, 'w', encoding='utf-8') as f:
+                json.dump(self.config, f, indent=4, ensure_ascii=False)
+        except Exception as e:
+            print(f"Ошибка сохранения настроек: {e}")
     
     def save_settings(self):
         self.config['ram_threshold_percent'] = self.ram_threshold.value()
@@ -1579,11 +1665,11 @@ pause
             key_path = r"Software\Microsoft\Windows\CurrentVersion\Run"
             key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, key_path, 0, winreg.KEY_ALL_ACCESS)
             if enable:
-                exe_path = os.path.abspath(sys.argv[0])
-                if exe_path.endswith('.py'):
-                    exe_path = f'"{sys.executable}" "{exe_path}"'
+                # Для EXE используем путь к самому EXE
+                if is_frozen():
+                    exe_path = f'"{sys.executable}"'
                 else:
-                    exe_path = f'"{exe_path}"'
+                    exe_path = f'"{sys.executable}" "{os.path.abspath(sys.argv[0])}"'
                 winreg.SetValueEx(key, "SmartRAMCleaner", 0, winreg.REG_SZ, exe_path)
             else:
                 try:
@@ -1599,7 +1685,6 @@ pause
         self.cleaner_thread.log_signal.connect(self.add_log)
         self.cleaner_thread.stats_updated.connect(self._on_stats_received)
         
-        # Предварительная инициализация psutil
         self.add_log("⏳ Инициализация мониторинга процессов...")
         try:
             for p in psutil.process_iter(['cpu_percent']):
@@ -1612,17 +1697,14 @@ pause
         self.start_btn.setText("⏹ Остановить")
     
     def _on_stats_received(self, stats):
-        """Поток присылает статистику, сохраняем в кэш"""
         self._latest_stats = stats
     
     def _update_ui_from_cache(self):
-        """QTimer обновляет UI из кэша каждые 500мс"""
         if self._latest_stats is None:
             return
         self._apply_stats_to_ui(self._latest_stats)
     
     def _apply_stats_to_ui(self, stats):
-        """Обновление UI из кэша"""
         self.update_tray_icon(stats['ram_percent'])
         
         self.ram_progress.setValue(int(stats['ram_percent']))
@@ -1675,7 +1757,6 @@ pause
             self.start_cleaner()
     
     def clean_now(self):
-        """Оптимизированная ручная очистка в отдельном потоке"""
         if self._cleaning_in_progress:
             self.add_log("⚠️ Очистка уже выполняется, подождите...")
             return
@@ -1686,12 +1767,10 @@ pause
         
         self.add_log("⚡ Запуск ручной очистки в фоновом потоке...")
         
-        # Создаём worker thread
         self.clean_worker_thread = QThread()
         self.clean_worker = CleanWorker(self.config)
         self.clean_worker.moveToThread(self.clean_worker_thread)
         
-        # Подключаем сигналы
         self.clean_worker_thread.started.connect(self.clean_worker.do_work)
         self.clean_worker.finished.connect(self._on_clean_finished)
         self.clean_worker.log_signal.connect(self.add_log)
@@ -1702,7 +1781,6 @@ pause
         self.clean_worker_thread.start()
     
     def _on_clean_finished(self, clean_stats, details):
-        """Обработка результатов очистки"""
         self._cleaning_in_progress = False
         self.clean_now_btn.setEnabled(True)
         self.clean_now_btn.setText("⚡ Очистить сейчас")
@@ -1756,6 +1834,10 @@ pause
     
     def manual_check_updates(self):
         """Ручная проверка обновлений"""
+        if not UPDATER_AVAILABLE:
+            QMessageBox.warning(self, "Ошибка", "Модуль updater.py не найден")
+            return
+        
         self.add_log("🔄 Проверка обновлений...")
         update_info = updater.check_for_updates(self, silent=False)
         if update_info:
@@ -1767,10 +1849,8 @@ pause
             self.add_log("✅ У вас последняя версия")
     
     def add_log(self, message):
-        """Добавляет сообщение в лог"""
         ts = datetime.now().strftime("%H:%M:%S")
         self.log_text.append(f"[{ts}] {message}")
-        # Автоскролл вниз
         scrollbar = self.log_text.verticalScrollBar()
         scrollbar.setValue(scrollbar.maximum())
 
@@ -1785,9 +1865,10 @@ if __name__ == "__main__":
     if not is_admin():
         early_app = QApplication(sys.argv)
         require_admin = True
-        if os.path.exists('settings.json'):
+        settings_path = get_settings_path()
+        if os.path.exists(settings_path):
             try:
-                with open('settings.json', 'r', encoding='utf-8') as f:
+                with open(settings_path, 'r', encoding='utf-8') as f:
                     cfg = json.load(f)
                     require_admin = cfg.get('require_admin', True)
             except:
@@ -1810,8 +1891,9 @@ if __name__ == "__main__":
     
     window = MainWindow()
     
-    # Проверка обновлений при запуске (через 2 секунды, чтобы окно успело отрисоваться)
-    QTimer.singleShot(2000, lambda: updater.check_updates_on_startup(window))
+    # Проверка обновлений при запуске
+    if UPDATER_AVAILABLE:
+        QTimer.singleShot(2000, lambda: updater.check_updates_on_startup(window))
     
     if window.config.get('start_minimized'):
         window.hide()
