@@ -27,7 +27,7 @@ except ImportError:
 # ==================== ВЕРСИЯ ПРИЛОЖЕНИЯ ====================
 APP_VERSION = "1.0.0"
 APP_NAME = "Smart RAM Cleaner Pro"
-GITHUB_REPO = "YOUR_USERNAME/SmartRAMCleaner"  # ← Замени на свой ник!
+GITHUB_REPO = "DENLOPER/SmartRAMCleaner"
 
 # ==================== УТИЛИТЫ ПУТЕЙ ====================
 def is_frozen():
