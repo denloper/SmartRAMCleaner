@@ -19,7 +19,7 @@
 ## 🚀 Установка
 
 ### Способ 1: Готовый EXE (рекомендуется)
-1. Перейди в [Releases](https://github.com/YOUR_USERNAME/SmartRAMCleaner/releases)
+1. Перейди в [Releases](https://github.com/DENLOPER/SmartRAMCleaner/releases)
 2. Скачай последний `SmartRAMCleaner.exe`
 3. Запусти от имени администратора
 
