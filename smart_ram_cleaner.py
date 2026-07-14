@@ -6,6 +6,7 @@ import ctypes
 import psutil
 import webbrowser
 import subprocess
+import updater  
 from datetime import datetime
 
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
@@ -19,8 +20,7 @@ from PyQt5.QtGui import QFont, QIcon, QColor, QPixmap, QPainter, QPen, QFontMetr
 # ==================== ВЕРСИЯ ПРИЛОЖЕНИЯ ====================
 APP_VERSION = "1.0.0"
 APP_NAME = "Smart RAM Cleaner Pro"
-GITHUB_REPO = "ТВОЙ_НИК/SmartRAMCleaner"  # ← Замени на свой!
-# Например: "coolhacker123/SmartRAMCleaner"
+GITHUB_REPO = "DENLOPER/SmartRAMCleaner"  # ← Замени на свой ник!
 
 # ==================== КОНСТАНТЫ WINDOWS API ====================
 PROCESS_SET_QUOTA = 0x0100
@@ -893,7 +893,7 @@ button { background: #007acc; color: white; border: none; padding: 10px 20px; bo
                 f.write(options_js)
     
     def init_ui(self):
-        self.setWindowTitle("Smart RAM Cleaner Pro")
+        self.setWindowTitle(f"{APP_NAME} v{APP_VERSION}")
         self.setGeometry(100, 100, 900, 750)
         self.setStyleSheet("""
             QMainWindow { background-color: #1e1e1e; }
@@ -917,7 +917,7 @@ button { background: #007acc; color: white; border: none; padding: 10px 20px; bo
         self.setCentralWidget(central_widget)
         main_layout = QVBoxLayout(central_widget)
         
-        title = QLabel("🧠 Smart RAM Cleaner Pro")
+        title = QLabel(f"🧠 {APP_NAME}")
         title.setFont(QFont("Segoe UI", 18, QFont.Bold))
         title.setStyleSheet("color: #007acc; margin-bottom: 10px;")
         title.setAlignment(Qt.AlignCenter)
@@ -1137,6 +1137,18 @@ button { background: #007acc; color: white; border: none; padding: 10px 20px; bo
             restart_admin_btn.setEnabled(False)
             restart_admin_btn.setText("✅ Уже запущено от администратора")
         layout.addWidget(restart_admin_btn)
+        
+        # Кнопка проверки обновлений
+        update_btn = QPushButton("🔄 Проверить обновления")
+        update_btn.setStyleSheet("background-color: #27ae60; color: white; font-weight: bold;")
+        update_btn.clicked.connect(self.manual_check_updates)
+        layout.addWidget(update_btn)
+        
+        # Показывает текущую версию
+        version_label = QLabel(f"Версия: v{APP_VERSION}")
+        version_label.setAlignment(Qt.AlignCenter)
+        version_label.setStyleSheet("color: #888; font-size: 10pt; margin-top: 10px;")
+        layout.addWidget(version_label)
         
         layout.addStretch()
         self.tabs.addTab(tab, "⚙️ Настройки")
@@ -1364,7 +1376,7 @@ pause
     def setup_tray(self):
         self.tray = QSystemTrayIcon(self)
         self.update_tray_icon(0)
-        self.tray.setToolTip("Smart RAM Cleaner Pro")
+        self.tray.setToolTip(f"{APP_NAME} v{APP_VERSION}")
         
         menu = QMenu()
         show_action = QAction("Показать", self)
@@ -1452,7 +1464,7 @@ pause
         icon = self._create_tray_icon(ram_percent)
         self.tray.setIcon(icon)
         self.tray.setToolTip(
-            f"Smart RAM Cleaner Pro\n"
+            f"{APP_NAME}\n"
             f"ОЗУ: {ram_percent:.1f}%\n"
             f"СКМ: очистка | ЛКМ: окно | ПКМ: меню"
         )
@@ -1470,7 +1482,7 @@ pause
         elif reason == QSystemTrayIcon.MiddleClick:
             self.clean_now()
             self.tray.showMessage(
-                "Smart RAM Cleaner",
+                APP_NAME,
                 "⚡ Очистка запущена!",
                 QSystemTrayIcon.Information, 1500
             )
@@ -1479,7 +1491,7 @@ pause
         event.ignore()
         self.hide()
         self.tray.showMessage(
-            "Smart RAM Cleaner",
+            APP_NAME,
             "Свёрнуто в трей. СКМ = очистка.",
             QSystemTrayIcon.Information, 2000
         )
@@ -1742,6 +1754,18 @@ pause
             if len(details) > 10:
                 self.add_log(f"   ... и ещё {len(details) - 10}")
     
+    def manual_check_updates(self):
+        """Ручная проверка обновлений"""
+        self.add_log("🔄 Проверка обновлений...")
+        update_info = updater.check_for_updates(self, silent=False)
+        if update_info:
+            self.add_log(f"🎉 Найдена новая версия: v{update_info['version']}")
+            result = updater.show_update_dialog(update_info, self)
+            if result == "download":
+                updater.download_and_install(update_info, self)
+        else:
+            self.add_log("✅ У вас последняя версия")
+    
     def add_log(self, message):
         """Добавляет сообщение в лог"""
         ts = datetime.now().strftime("%H:%M:%S")
@@ -1785,6 +1809,9 @@ if __name__ == "__main__":
     app.setQuitOnLastWindowClosed(False)
     
     window = MainWindow()
+    
+    # Проверка обновлений при запуске (через 2 секунды, чтобы окно успело отрисоваться)
+    QTimer.singleShot(2000, lambda: updater.check_updates_on_startup(window))
     
     if window.config.get('start_minimized'):
         window.hide()

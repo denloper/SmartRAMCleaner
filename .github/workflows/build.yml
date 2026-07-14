@@ -1,0 +1,115 @@
+name: Build and Release
+
+on:
+  push:
+    tags:
+      - 'v*'  # Запуск при создании тега v1.0.0, v1.1.0 и т.д.
+  workflow_dispatch:  # Возможность ручного запуска из GitHub UI
+
+jobs:
+  build:
+    name: Build Windows EXE
+    runs-on: windows-latest
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+    
+    - name: Set up Python 3.11
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+        cache: 'pip'
+    
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+    
+    - name: Extract version from tag
+      id: version
+      shell: bash
+      run: |
+        if [[ "${{ github.ref }}" == refs/tags/* ]]; then
+          VERSION=${GITHUB_REF#refs/tags/v}
+        else
+          VERSION="dev-$(date +%Y%m%d)"
+        fi
+        echo "version=$VERSION" >> $GITHUB_OUTPUT
+        echo "Building version: $VERSION"
+    
+    - name: Update version in source
+      shell: pwsh
+      run: |
+        $version = "${{ steps.version.outputs.version }}"
+        (Get-Content smart_ram_cleaner.py) -replace 'APP_VERSION = ".*"', "APP_VERSION = `"$version`"" | Set-Content smart_ram_cleaner.py
+        Write-Host "Updated APP_VERSION to $version"
+    
+    - name: Build EXE with PyInstaller
+      run: |
+        pyinstaller --noconfirm --onefile --windowed `
+          --name SmartRAMCleaner `
+          --uac-admin `
+          --icon=assets/icon.ico `
+          --add-data "chrome_extension;chrome_extension" `
+          smart_ram_cleaner.py
+    
+    - name: Verify build
+      shell: bash
+      run: |
+        if [ ! -f "dist/SmartRAMCleaner.exe" ]; then
+          echo "ERROR: EXE file not found!"
+          exit 1
+        fi
+        ls -lh dist/
+        echo "✅ Build successful!"
+    
+    - name: Get tag message
+      id: tag_message
+      if: startsWith(github.ref, 'refs/tags/')
+      shell: bash
+      run: |
+        TAG_NAME=${GITHUB_REF#refs/tags/}
+        MESSAGE=$(git tag -l --format='%(contents)' $TAG_NAME)
+        echo "message<<EOF" >> $GITHUB_OUTPUT
+        echo "$MESSAGE" >> $GITHUB_OUTPUT
+        echo "EOF" >> $GITHUB_OUTPUT
+    
+    - name: Create GitHub Release
+      uses: softprops/action-gh-release@v1
+      if: startsWith(github.ref, 'refs/tags/')
+      with:
+        name: Smart RAM Cleaner Pro v${{ steps.version.outputs.version }}
+        body: |
+          ## 🎉 Smart RAM Cleaner Pro v${{ steps.version.outputs.version }}
+          
+          ${{ steps.tag_message.outputs.message }}
+          
+          ---
+          
+          ### 📥 Установка
+          1. Скачай `SmartRAMCleaner.exe` ниже
+          2. Запусти от имени администратора
+          3. Готово!
+          
+          ### 🔄 Автообновление
+          Если у тебя уже установлена программа — она сама предложит обновиться при следующем запуске.
+          
+          ---
+          
+          **Полный список изменений:** [CHANGELOG](https://github.com/${{ github.repository }}/commits/${{ github.ref_name }})
+        files: |
+          dist/SmartRAMCleaner.exe
+        draft: false
+        prerelease: false
+        generate_release_notes: true
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    
+    - name: Upload artifact (для отладки)
+      uses: actions/upload-artifact@v4
+      if: always()
+      with:
+        name: SmartRAMCleaner-v${{ steps.version.outputs.version }}
+        path: dist/SmartRAMCleaner.exe
+        retention-days: 30
