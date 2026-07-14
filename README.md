@@ -25,7 +25,7 @@
 
 ### Способ 2: Из исходников
 ```bash
-git clone https://github.com/YOUR_USERNAME/SmartRAMCleaner.git
+git clone https://github.com/DENLOPER/SmartRAMCleaner.git
 cd SmartRAMCleaner
 pip install -r requirements.txt
 python smart_ram_cleaner.py
