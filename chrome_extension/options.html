@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Настройки Smart Tab Suspender</title>
+  <style>
+    body { font-family: 'Segoe UI', Arial; background: #1e1e1e; color: white; padding: 20px; max-width: 600px; margin: 0 auto; }
+    h2 { color: #007acc; }
+    .section { background: #252526; padding: 15px; border-radius: 5px; margin-bottom: 15px; }
+    label { display: block; margin: 10px 0 5px; }
+    input[type="number"], textarea { background: #3c3c3c; color: white; border: 1px solid #555; padding: 8px; border-radius: 3px; width: 100%; box-sizing: border-box; }
+    textarea { height: 100px; font-family: monospace; }
+    button { background: #007acc; color: white; border: none; padding: 10px 20px; border-radius: 4px; cursor: pointer; font-weight: bold; }
+    button:hover { background: #005a9e; }
+    .checkbox-row { display: flex; align-items: center; gap: 10px; margin: 8px 0; }
+  </style>
+</head>
+<body>
+  <h2>⚙️ Настройки Smart Tab Suspender</h2>
+  
+  <div class="section">
+    <h3>⏱️ Время до заморозки</h3>
+    <label>Замораживать вкладки после (минут неактивности):</label>
+    <input type="number" id="suspendTime" min="1" max="1440" value="10">
+  </div>
+  
+  <div class="section">
+    <h3>🛡️ Исключения</h3>
+    <div class="checkbox-row">
+      <input type="checkbox" id="dontSuspendPinned" checked>
+      <label for="dontSuspendPinned">Не замораживать закреплённые вкладки</label>
+    </div>
+    <div class="checkbox-row">
+      <input type="checkbox" id="dontSuspendAudio" checked>
+      <label for="dontSuspendAudio">Не замораживать вкладки со звуком</label>
+    </div>
+    <div class="checkbox-row">
+      <input type="checkbox" id="dontSuspendActive" checked>
+      <label for="dontSuspendActive">Не замораживать активную вкладку</label>
+    </div>
+  </div>
+  
+  <div class="section">
+    <h3>🌐 Белый список доменов</h3>
+    <label>Эти сайты никогда не будут заморожены (каждый с новой строки):</label>
+    <textarea id="whitelist" placeholder="youtube.com&#10;spotify.com&#10;discord.com"></textarea>
+  </div>
+  
+  <button id="saveBtn">💾 Сохранить</button>
+  <span id="status" style="margin-left: 10px; color: #27ae60;"></span>
+  
+  <script src="options.js"></script>
+</body>
+</html>

@@ -1,0 +1,29 @@
+{
+    "ram_threshold_percent": 85,
+    "commit_critical_percent": 85,
+    "check_interval_sec": 1.0,
+    "cooldown_sec": 300,
+    "min_process_memory_mb": 300,
+    "max_disk_write_mb_s": 10,
+    "autostart": false,
+    "start_minimized": false,
+    "whitelist": [
+        "explorer.exe",
+        "svchost.exe"
+    ],
+    "user_whitelist": [
+        "chrome.exe"
+    ],
+    "clean_working_set": true,
+    "clean_standby_low": true,
+    "clean_standby_normal": true,
+    "clean_standby_all": true,
+    "clean_system_cache": false,
+    "clean_combine_lists": false,
+    "clean_modified_list": false,
+    "clean_paged_pool": false,
+    "clean_priority_boost": true,
+    "clean_trim_processes": false,
+    "clean_transition_pages": true,
+    "require_admin": true
+}
