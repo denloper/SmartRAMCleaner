@@ -9,6 +9,9 @@ on:
 permissions:
   contents: write
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 jobs:
   build:
     name: Build Windows EXE
@@ -18,101 +21,88 @@ jobs:
     - name: Checkout repository
       uses: actions/checkout@v4
     
-    - name: Set up Python 3.11
+    - name: Set up Python
       uses: actions/setup-python@v5
       with:
         python-version: '3.11'
     
-    - name: Debug - Show repository structure
+    - name: Show repository structure
       shell: pwsh
       run: |
-        Write-Host "=== Current directory: $(Get-Location) ==="
+        Write-Host "=== Current directory ==="
+        Get-Location
         Write-Host "=== Files in root ==="
-        Get-ChildItem | Select-Object Name, Length
-        Write-Host "=== All files (recursive) ==="
-        Get-ChildItem -Recurse -File | Select-Object -First 30 FullName
+        Get-ChildItem | Format-Table Name, Length
     
-    - name: Install dependencies directly
+    - name: Install dependencies
       shell: pwsh
       run: |
         python -m pip install --upgrade pip
         pip install PyQt5==5.15.11 psutil requests Pillow pyinstaller
-        Write-Host "✅ Dependencies installed"
-        pip list | Select-String "PyQt5|psutil|requests|Pillow|pyinstaller"
+        Write-Host "Dependencies installed"
+        pip list
     
-    - name: Check main script exists
+    - name: Verify main script exists
       shell: pwsh
       run: |
         if (Test-Path "smart_ram_cleaner.py") {
-          Write-Host "✅ smart_ram_cleaner.py found!"
+          Write-Host "smart_ram_cleaner.py found"
         } else {
-          Write-Host "❌ smart_ram_cleaner.py NOT FOUND!"
-          Write-Host "Files in current dir:"
-          Get-ChildItem
+          Write-Error "smart_ram_cleaner.py not found"
           exit 1
         }
     
-    - name: Create chrome_extension folder if missing
+    - name: Create chrome_extension if missing
       shell: pwsh
       run: |
         if (-not (Test-Path "chrome_extension")) {
-          Write-Host "⚠️ chrome_extension folder missing, creating minimal version..."
           New-Item -ItemType Directory -Path "chrome_extension" -Force | Out-Null
-          @'
-{
-  "manifest_version": 3,
-  "name": "Smart Tab Suspender",
-  "version": "1.0",
-  "description": "Tab suspender for Smart RAM Cleaner",
-  "permissions": ["tabs", "storage"],
-  "background": {"service_worker": "background.js"}
-}
-'@ | Set-Content "chrome_extension/manifest.json"
-          "console.log('Smart Tab Suspender loaded');" | Set-Content "chrome_extension/background.js"
+          $manifest = @{
+            manifest_version = 3
+            name = "Smart Tab Suspender"
+            version = "1.0"
+            description = "Tab suspender"
+            permissions = @("tabs", "storage")
+            background = @{ service_worker = "background.js" }
+          } | ConvertTo-Json -Depth 5
+          Set-Content -Path "chrome_extension/manifest.json" -Value $manifest
+          Set-Content -Path "chrome_extension/background.js" -Value "console.log('loaded');"
+          Write-Host "chrome_extension created"
+        } else {
+          Write-Host "chrome_extension already exists"
         }
-        Write-Host "✅ chrome_extension ready"
+    
+    - name: Create icon if missing
+      shell: pwsh
+      run: |
+        if (-not (Test-Path "assets/icon.ico")) {
+          New-Item -ItemType Directory -Path "assets" -Force | Out-Null
+          python -c "from PIL import Image; img = Image.new('RGB', (256, 256), color=(0, 122, 204)); img.save('assets/icon.ico', format='ICO')"
+          Write-Host "Icon created"
+        }
     
     - name: Build EXE with PyInstaller
       shell: pwsh
       run: |
-        Write-Host "🔨 Starting PyInstaller build..."
-        $addData = ""
-        if (Test-Path "chrome_extension") {
-          $addData = '--add-data "chrome_extension;chrome_extension"'
-        }
-        
-        $iconArg = ""
-        if (Test-Path "assets/icon.ico") {
-          $iconArg = '--icon "assets/icon.ico"'
-        }
-        
-        $cmd = "pyinstaller --noconfirm --onefile --windowed --name SmartRAMCleaner --uac-admin $addData $iconArg smart_ram_cleaner.py"
-        Write-Host "Running: $cmd"
-        Invoke-Expression $cmd
-        
-        Write-Host "=== Build completed! ==="
-        Write-Host "Files in dist/:"
+        Write-Host "Starting build..."
+        pyinstaller --noconfirm --onefile --windowed --name SmartRAMCleaner --uac-admin --icon "assets/icon.ico" --add-data "chrome_extension;chrome_extension" smart_ram_cleaner.py
+        Write-Host "Build completed"
         Get-ChildItem dist -ErrorAction SilentlyContinue
     
-    - name: Verify EXE was created
+    - name: Verify EXE exists
       shell: pwsh
       run: |
         if (Test-Path "dist/SmartRAMCleaner.exe") {
           $file = Get-Item "dist/SmartRAMCleaner.exe"
           $sizeMB = [math]::Round($file.Length / 1MB, 2)
-          Write-Host "✅ EXE created successfully!"
-          Write-Host "   Name: $($file.Name)"
-          Write-Host "   Size: $sizeMB MB"
+          Write-Host "EXE created successfully"
+          Write-Host "Size: $sizeMB MB"
         } else {
-          Write-Host "❌ FATAL: SmartRAMCleaner.exe not found in dist/"
-          Write-Host "Contents of dist/:"
-          Get-ChildItem dist -ErrorAction SilentlyContinue
-          Write-Host "Contents of current dir:"
-          Get-ChildItem
+          Write-Error "SmartRAMCleaner.exe not found in dist/"
           exit 1
         }
     
-    - name: Upload EXE to GitHub Release
+    - name: Upload EXE to Release
       uses: softprops/action-gh-release@v2
       if: startsWith(github.ref, 'refs/tags/')
       with:
@@ -121,7 +111,7 @@ jobs:
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     
-    - name: Upload artifact (backup)
+    - name: Upload artifact as backup
       uses: actions/upload-artifact@v4
       if: always()
       with:
